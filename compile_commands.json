@@ -86,11 +86,11 @@
       "-x",
       "c++",
       "-o",
-      "/tmp/main-6a54a6.o",
+      "/tmp/main-ef81c7.o",
       "main.cpp"
     ],
     "directory": "/home/wjl/work/cpp_projects/huffman",
     "file": "/home/wjl/work/cpp_projects/huffman/main.cpp",
-    "output": "/tmp/main-6a54a6.o"
+    "output": "/tmp/main-ef81c7.o"
   }
 ]
