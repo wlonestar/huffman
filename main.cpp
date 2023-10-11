@@ -157,16 +157,21 @@ void build_huffman(huffman &huffman, const std::string &contents) {
   // huffman.print_tree();
 }
 
-struct huff_info {
-  uint8_t val;
-  uint16_t freq;
-  char code[16];
-} __attribute__((__packed__));
-
+/**
+ * file head: 8B
+ */
 struct huff_head {
   uint8_t magic[4];
   uint32_t size;
-};
+} __attribute__((__packed__));
+
+/**
+ * huffman entry: 3B
+ */
+struct huff_entry {
+  uint8_t val;
+  uint8_t code[2];
+} __attribute__((__packed__));
 
 void write_head(std::vector<huff_code> &v, FILE *fp) {
   huff_head *head = new huff_head();
@@ -176,13 +181,12 @@ void write_head(std::vector<huff_code> &v, FILE *fp) {
   memcpy(content, head, sizeof(huff_head));
   fwrite(content, sizeof(huff_head), 1, fp);
   for (auto &val : v) {
-    huff_info *info = new huff_info();
-    info->freq = val.freq;
+    huff_entry *entry = new huff_entry();
     assert(val.code.size() < 16);
-    strncpy(info->code, val.code.c_str(), val.code.size());
-    uint8_t *info_str = new uint8_t[sizeof(huff_info)];
-    memcpy(info_str, (uint8_t *) info, sizeof(huff_info));
-    fwrite(info_str, sizeof(huff_info), 1, fp);
+    memcpy(entry->code, val.code.c_str(), val.code.size());
+    uint8_t *info_str = new uint8_t[sizeof(huff_entry)];
+    memcpy(info_str, (uint8_t *) entry, sizeof(huff_entry));
+    fwrite(info_str, sizeof(huff_entry), 1, fp);
   }
 }
 
@@ -191,6 +195,7 @@ void write_to_file(const std::string &contents, std::vector<huff_code> &v, const
   write_head(v, fp);
   std::string codes;
   std::map<uint8_t, huff_code> maps;
+  // put into map, easy to find
   for (auto val : v) {
     if (maps.find(val.val) == maps.end()) {
       maps.insert({val.val, val});
