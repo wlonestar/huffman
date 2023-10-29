@@ -15,6 +15,14 @@ build: config main.cpp
 run:
 	$(BUILD_DIR)/$(TARGET) a.txt
 
+test-encode:
+	$(BUILD_DIR)/$(TARGET) encode a.txt a.huff
+
+test-decode:
+	$(BUILD_DIR)/$(TARGET) decode a.huff b.txt
+
+test: test-encode test-decode
+
 format:
 	clang-format -i *.cpp
 
