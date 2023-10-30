@@ -145,6 +145,41 @@ void build_tree(const string &contents, huff_tree &t) {
 }
 
 /**
+ * build huff tree based on encoded huff code
+ */
+void rebuild_tree(vector<huff_code> &v, huff_tree &t) {
+  t.root = new huff_node();
+  t.root->data.code = "";
+  huff_node *p;
+  for (auto &item: v) {
+    p = t.root;
+    for (int i = 0; i < item.code.size(); i++) {
+      char ch = item.code[i];
+      huff_code code(item.val);
+      if (ch == '0') {
+        if (p->left == nullptr) {
+          huff_node *left = new huff_node();
+          left->type = (i == item.code.size() - 1) ? LEAF : INTERNAL;
+          p->left = left;
+        }
+        code.code = p->data.code + "0";
+        p->left->data = code;
+        p = p->left;
+      } else if (ch == '1') {
+        if (p->right == nullptr) {
+          huff_node *right = new huff_node();
+          right->type = (i == item.code.size() - 1) ? LEAF : INTERNAL;
+          p->right = right;
+        }
+        code.code = p->data.code + "1";
+        p->right->data = code;
+        p = p->right;
+      }
+    }
+  }
+}
+
+/**
  * file head: 8B
  */
 struct huff_head {
@@ -225,7 +260,33 @@ int read_entry(int fd, int entry_size, vector<huff_code> &v) {
     string str;
     convert_uint16_to_01_str(entry.code, entry.length, str);
     code.code = str;
-    printf("%c-%s\n", code.val, code.code.c_str());
+    v.push_back(code);
+  }
+  return 0;
+}
+void read_contents(int fd, string &contents, int file_size, int entry_size) {
+  int contents_size = file_size - sizeof(huff_head) - sizeof(huff_entry) * entry_size;
+  char *buffer = new char[contents_size];
+  int ret_sz = read(fd, buffer, contents_size);
+  assert(ret_sz == contents_size);
+  for (int i = 0; i < contents_size; i++) {
+    uint8_t ch = buffer[i];
+    string tmp = "";
+    for (int i = 7; i >= 0; i--) {
+      int val = (ch & (1 << i)) >> i;
+      tmp.insert(tmp.end(), val == 0 ? '0' : '1');
+    }
+    contents.append(tmp);
+  }
+}
+void decode(string &src, string &dst, huff_tree &t) {
+  huff_node *p = t.root;
+  for (uint8_t ch: src) {
+    p = (ch == '0') ? p->left : p->right;
+    if (p->type == LEAF) {
+      dst.push_back(p->data.val);
+      p = t.root;
+    }
   }
 }
 
@@ -264,27 +325,38 @@ int write_code(const char *filename, string &contents, huff_tree &t) {
  * decode: read from huff file and write into file
  */
 
-int read_code(const char *filename, string &contents) {
+int read_code(const char *filename, string &src, huff_tree &t) {
   int fd = open(filename, O_RDONLY);
   if (fd == -1) return -1;
   struct stat st;
   stat(filename, &st);
-  int size = st.st_size;
+  int file_size = st.st_size;
   int entry_size;
   int ret = read_head(fd, &entry_size);
   if (ret == -1) return -1;
   vector<huff_code> v;
   read_entry(fd, entry_size, v);
-  /**
-   * TODO:
-   * 
-   * build huff tree based encoded huff char
-   */
-
+  rebuild_tree(v, t);
+  // t._print_tree();
+  read_contents(fd, src, file_size, entry_size);
   return 0;
 }
 
-void write_text(const char *filename, string &contents, huff_tree &t) {
+int write_text(const char *filename, string &src, huff_tree &t) {
+  int fd = open(filename, O_RDWR | O_CREAT);
+  if (fd == -1) return -1;
+  string dst = "";
+  /**
+   * TODO:
+   * 
+   * last char is not correct: not integer multiple of 8 bit
+   */
+  decode(src, dst, t);
+  int dst_size = dst.size();
+  cout << dst << "\n";
+  int ret = write(fd, dst.c_str(), dst_size);
+  // assert(ret == dst_size);
+  return 0;
 }
 
 /**
@@ -296,16 +368,17 @@ int main(int argc, char *argv[]) {
   char *input_file = argv[2];
   char *output_file = argv[3];
   huff_tree t;
-  string contents;
+  string src = "";
   if (strcmp(mode, "encode") == 0) {
-    int rd = read_text(input_file, contents);
+    int rd = read_text(input_file, src);
     if (rd == -1) return -1;
-    build_tree(contents, t);
-    write_code(output_file, contents, t);
+    build_tree(src, t);
+    t._print_tree();
+    write_code(output_file, src, t);
   } else if (strcmp(mode, "decode") == 0) {
-    int rd = read_code(input_file, contents);
+    int rd = read_code(input_file, src, t);
     if (rd == -1) return -1;
-
+    write_text(output_file, src, t);
   } else {
     return -1;
   }
