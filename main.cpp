@@ -184,7 +184,8 @@ void rebuild_tree(vector<huff_code> &v, huff_tree &t) {
  */
 struct huff_head {
   uint32_t magic;
-  uint32_t size;
+  uint16_t size;
+  uint16_t last_length;
 } __attribute__((__packed__));
 
 /**
@@ -196,17 +197,17 @@ struct huff_entry {
   uint16_t code;
 } __attribute__((__packed__));
 
-int write_head(int fd, huff_tree &t) {
+int write_head(int fd, huff_tree &t, int length) {
   int head_size = sizeof(huff_head);
-  huff_head head{.magic = MAGIC, .size = t.size};
+  huff_head head{
+    .magic = MAGIC,
+    .size = static_cast<uint16_t>(t.size),
+    .last_length = static_cast<uint16_t>(length)};
   char *buffer = new char[head_size];
   memcpy(buffer, &head, head_size);
-  printf("%x %d\n", head.magic, head.size);
   return write(fd, buffer, head_size);
 }
-int write_entry(int fd, string &contents, huff_tree &t, map<uint8_t, huff_code> &maps) {
-  vector<huff_code> v;
-  for (auto val: maps) v.push_back(val.second);
+int write_entry(int fd, huff_tree &t, vector<huff_code> &v) {
   for (auto code: v) {
     int entry_size = sizeof(huff_entry);
     bitset<16> b(code.code.c_str());
@@ -219,28 +220,28 @@ int write_entry(int fd, string &contents, huff_tree &t, map<uint8_t, huff_code> 
     char *buffer = new char[entry_size];
     memcpy(buffer, &entry, entry_size);
     ssize_t ret = write(fd, buffer, entry_size);
-    // printf("write %zd size entry: %16b\n", ret, entry.code);
   }
   return 0;
 }
-void write_contents(int fd, string &contents, huff_tree &t, map<uint8_t, huff_code> &maps) {
-  string bits;
-  for (auto ch: contents) bits.append(maps[ch].code);
-  // cout << bits << "\n" << bits.size() << "\n";
-  for (int i = 0; i < bits.size(); i += 8) {
-    bitset<16> b(bits.substr(i, 8));
+void write_contents(int fd, string &dst, huff_tree &t) {
+  int i, times = dst.size() / 8;
+  for (i = 0; i < times * 8; i += 8) {
+    bitset<8> b(dst.substr(i, 8));
     uint8_t val = b.to_ulong();
-    ssize_t ret = write(fd, &val, 1);
-    // printf("write %zd byte\n", ret);
+    write(fd, &val, 1);
   }
+  bitset<8> b(dst.substr(i, dst.size() - i));
+  uint8_t val = b.to_ulong();
+  write(fd, &val, 1);
 }
 
-int read_head(int fd, int *entry_size) {
+int read_head(int fd, int *entry_size, int *last_length) {
   int head_size = sizeof(huff_head);
   huff_head head;
   int ret = read(fd, &head, head_size);
   if (head.magic != MAGIC) return -1;
   *entry_size = head.size;
+  *last_length = head.last_length;
   return 0;
 }
 void convert_uint16_to_01_str(uint16_t code, int length, string &ret) {
@@ -264,20 +265,27 @@ int read_entry(int fd, int entry_size, vector<huff_code> &v) {
   }
   return 0;
 }
-void read_contents(int fd, string &contents, int file_size, int entry_size) {
+void read_contents(int fd, string &contents, int file_size, int entry_size, int file_length) {
   int contents_size = file_size - sizeof(huff_head) - sizeof(huff_entry) * entry_size;
   char *buffer = new char[contents_size];
   int ret_sz = read(fd, buffer, contents_size);
-  assert(ret_sz == contents_size);
-  for (int i = 0; i < contents_size; i++) {
+  for (int i = 0; i < contents_size - 1; i++) {
     uint8_t ch = buffer[i];
     string tmp = "";
-    for (int i = 7; i >= 0; i--) {
-      int val = (ch & (1 << i)) >> i;
+    for (int j = 7; j >= 0; j--) {
+      int val = (ch & (1 << j)) >> j;
       tmp.insert(tmp.end(), val == 0 ? '0' : '1');
     }
     contents.append(tmp);
   }
+  // special for the last
+  uint8_t ch = buffer[contents_size - 1];
+  string tmp = "";
+  for (int i = 7; i >= 7 - file_length; i--) {
+    int val = (ch & (1 << i)) >> i;
+    tmp.insert(tmp.end(), val == 0 ? '0' : '1');
+  }
+  contents.append(tmp);
 }
 void decode(string &src, string &dst, huff_tree &t) {
   huff_node *p = t.root;
@@ -308,16 +316,21 @@ int read_text(const char *filename, string &contents) {
 }
 
 int write_code(const char *filename, string &contents, huff_tree &t) {
-  int fd = open(filename, O_CREAT | O_RDWR);
+  int fd = open(filename, O_CREAT | O_RDWR, 0644);
   if (fd == -1) return -1;
   map<uint8_t, huff_code> maps;
   t.extract_maps(maps);
-  ssize_t ret = write_head(fd, t);
-  // cout << "write " << ret << " huff file head\n";
-  write_entry(fd, contents, t, maps);
+  vector<huff_code> v;
+  for (auto val: maps) v.push_back(val.second);
+  string dst;
+  for (auto ch: contents) dst.append(maps[ch].code);
+  // byte, not bit size
+  int last_length = dst.size() % 8;
+  ssize_t ret = write_head(fd, t, last_length);
+  write_entry(fd, t, v);
   int file_size = sizeof(huff_head) + sizeof(huff_entry) * t.size;
-  // cout << file_size << "\n";
-  write_contents(fd, contents, t, maps);
+  write_contents(fd, dst, t);
+  close(fd);
   return 0;
 }
 
@@ -332,30 +345,24 @@ int read_code(const char *filename, string &src, huff_tree &t) {
   stat(filename, &st);
   int file_size = st.st_size;
   int entry_size;
-  int ret = read_head(fd, &entry_size);
+  int last_length;
+  int ret = read_head(fd, &entry_size, &last_length);
   if (ret == -1) return -1;
+  cout << "entry_size:" << entry_size << ",last_length:" << last_length << "\n";
   vector<huff_code> v;
   read_entry(fd, entry_size, v);
   rebuild_tree(v, t);
-  // t._print_tree();
-  read_contents(fd, src, file_size, entry_size);
+  read_contents(fd, src, file_size, entry_size, last_length);
   return 0;
 }
 
 int write_text(const char *filename, string &src, huff_tree &t) {
-  int fd = open(filename, O_RDWR | O_CREAT);
+  int fd = open(filename, O_CREAT | O_RDWR, 0644);
   if (fd == -1) return -1;
   string dst = "";
-  /**
-   * TODO:
-   * 
-   * last char is not correct: not integer multiple of 8 bit
-   */
   decode(src, dst, t);
   int dst_size = dst.size();
-  cout << dst << "\n";
   int ret = write(fd, dst.c_str(), dst_size);
-  // assert(ret == dst_size);
   return 0;
 }
 
@@ -373,7 +380,6 @@ int main(int argc, char *argv[]) {
     int rd = read_text(input_file, src);
     if (rd == -1) return -1;
     build_tree(src, t);
-    t._print_tree();
     write_code(output_file, src, t);
   } else if (strcmp(mode, "decode") == 0) {
     int rd = read_code(input_file, src, t);
