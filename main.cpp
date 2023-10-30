@@ -1,21 +1,20 @@
 #include <bitset>
 #include <cassert>
 #include <cstring>
-#include <fcntl.h>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <queue>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <vector>
-using namespace std;
+namespace fs = std::filesystem;
 
-#define MAGIC 0x4655482e
+#define MAGIC 0x4655482e// huff file magic number: .HUF
 
 struct huff_code {
   uint8_t val;
   uint32_t freq;
-  string code;
+  std::string code;
 
   huff_code(uint8_t v = ' ', uint32_t f = 1) : val(v), freq(f) {}
 };
@@ -51,7 +50,7 @@ struct huff_tree {
 
   // for each leaf node, give a specific code
   // left: 0, right: 1
-  void _encode_tree(huff_node *p, string &prefix, uint8_t t) {
+  void _encode_tree(huff_node *p, std::string &prefix, uint8_t t) {
     if (p == nullptr) return;
     // skip the root node
     if (p != root) {
@@ -66,8 +65,8 @@ struct huff_tree {
     _encode_tree(root, root->data.code, 0);
   }
 
-  void extract_maps(map<uint8_t, huff_code> &maps) {
-    queue<huff_node *> q;
+  void extract_maps(std::map<uint8_t, huff_code> &maps) {
+    std::queue<huff_node *> q;
     huff_node *p = root;
     q.push(p);
     while (!q.empty()) {
@@ -104,12 +103,12 @@ struct huff_tree {
   }
 };
 
-void maps_generator(const string &contents, map<uint8_t, huff_node *> &maps) {
+void maps_generator(const std::string &src, std::map<uint8_t, huff_node *> &maps) {
   // map<uint8_t, huff_node*> maps;
-  for (uint8_t ch: contents) {
+  for (uint8_t ch: src) {
     if (maps.find(ch) == maps.end()) {
       huff_code code(ch);
-      huff_node *node = new huff_node(move(code));
+      huff_node *node = new huff_node(std::move(code));
       maps.insert({ch, node});
     } else {
       maps[ch]->data.freq++;
@@ -118,12 +117,12 @@ void maps_generator(const string &contents, map<uint8_t, huff_node *> &maps) {
 }
 
 // build huffman tree
-void build_tree(const string &contents, huff_tree &t) {
+void build_tree(const std::string &src, huff_tree &t) {
   // loop and count the freq of char
-  map<uint8_t, huff_node *> maps;
-  maps_generator(contents, maps);
+  std::map<uint8_t, huff_node *> maps;
+  maps_generator(src, maps);
   // push all into priority queue
-  priority_queue<huff_node *, vector<huff_node *>, huff_node::Compare> q;
+  std::priority_queue<huff_node *, std::vector<huff_node *>, huff_node::Compare> q;
   for (auto &pair: maps) q.push(pair.second);
   // get node nums
   uint32_t size = q.size();
@@ -134,7 +133,7 @@ void build_tree(const string &contents, huff_tree &t) {
     huff_node *right = q.top();
     q.pop();
     huff_code code(' ', left->data.freq + right->data.freq);
-    huff_node *parent = new huff_node(move(code), left, right, INTERNAL);
+    huff_node *parent = new huff_node(std::move(code), left, right, INTERNAL);
     q.push(parent);
   }
   assert(q.size() == 1);
@@ -147,7 +146,7 @@ void build_tree(const string &contents, huff_tree &t) {
 /**
  * build huff tree based on encoded huff code
  */
-void rebuild_tree(vector<huff_code> &v, huff_tree &t) {
+void rebuild_tree(std::vector<huff_code> &v, huff_tree &t) {
   t.root = new huff_node();
   t.root->data.code = "";
   huff_node *p;
@@ -197,174 +196,221 @@ struct huff_entry {
   uint16_t code;
 } __attribute__((__packed__));
 
-int write_head(int fd, huff_tree &t, int length) {
-  int head_size = sizeof(huff_head);
-  huff_head head{
-    .magic = MAGIC,
-    .size = static_cast<uint16_t>(t.size),
-    .last_length = static_cast<uint16_t>(length)};
-  char *buffer = new char[head_size];
-  memcpy(buffer, &head, head_size);
-  return write(fd, buffer, head_size);
-}
-int write_entry(int fd, huff_tree &t, vector<huff_code> &v) {
-  for (auto code: v) {
-    int entry_size = sizeof(huff_entry);
-    bitset<16> b(code.code.c_str());
-    uint16_t t = b.to_ulong();
-    huff_entry entry{
-      .val = code.val,
-      .length = static_cast<uint8_t>(code.code.size()),
-      .code = t,
-    };
-    char *buffer = new char[entry_size];
-    memcpy(buffer, &entry, entry_size);
-    ssize_t ret = write(fd, buffer, entry_size);
+class huffman_coder_base {
+protected:
+  huff_tree t;
+  std::string src, dst;
+  char *input_file, *output_file;
+  size_t file_size;
+  std::ifstream in;
+  std::ofstream out;
+  std::vector<huff_code> v;
+
+public:
+  huffman_coder_base(char *input, char *output)
+      : input_file(input), output_file(output) {
+    src = dst = "";
   }
-  return 0;
-}
-void write_contents(int fd, string &dst, huff_tree &t) {
-  int i, times = dst.size() / 8;
-  for (i = 0; i < times * 8; i += 8) {
-    bitset<8> b(dst.substr(i, 8));
+
+  ~huffman_coder_base() {
+    in.close();
+    out.close();
+  }
+
+  virtual int read_init() {
+    if (!fs::exists(input_file)) return -1;
+    fs::path p = input_file;
+    file_size = fs::file_size(p);
+    in = std::ifstream(p, std::ios::in | std::ios::binary);
+    if (!in) return -1;
+    return 0;
+  }
+
+  virtual int write_init() {
+    if (!fs::exists(output_file)) {
+      fs::create_directories(fs::current_path());
+      out = std::ofstream(output_file);
+    }
+    out = std::ofstream(output_file, std::ios::trunc);
+    if (!out.is_open()) return -1;
+    return 0;
+  }
+
+  virtual int read() = 0;
+  virtual int write() = 0;
+};
+
+class huffman_encoder : protected huffman_coder_base {
+private:
+  size_t last_length;
+  std::map<uint8_t, huff_code> maps;
+
+private:
+  int write_head() {
+    int head_size = sizeof(huff_head);
+    huff_head head{
+      .magic = MAGIC,
+      .size = static_cast<uint16_t>(t.size),
+      .last_length = static_cast<uint16_t>(last_length)};
+    char *buffer = new char[head_size];
+    memcpy(buffer, &head, head_size);
+    out.write(buffer, head_size);
+    return 0;
+  }
+
+  int write_entry() {
+    for (auto code: v) {
+      int entry_size = sizeof(huff_entry);
+      std::bitset<16> b(code.code.c_str());
+      uint16_t t = b.to_ulong();
+      huff_entry entry{
+        .val = code.val,
+        .length = static_cast<uint8_t>(code.code.size()),
+        .code = t,
+      };
+      char *buffer = new char[entry_size];
+      memcpy(buffer, &entry, entry_size);
+      out.write(buffer, entry_size);
+    }
+    return 0;
+  }
+
+  void write_contents() {
+    int i, times = dst.size() / 8;
+    for (i = 0; i < times * 8; i += 8) {
+      std::bitset<8> b(dst.substr(i, 8));
+      uint8_t val = b.to_ulong();
+      char *buffer = new char[1];
+      memcpy(buffer, &val, 1);
+      out.write(buffer, 1);
+    }
+    std::bitset<8> b(dst.substr(i, dst.size() - i));
     uint8_t val = b.to_ulong();
-    write(fd, &val, 1);
+    char *buffer = new char[1];
+    memcpy(buffer, &val, 1);
+    out.write(buffer, 1);
   }
-  bitset<8> b(dst.substr(i, dst.size() - i));
-  uint8_t val = b.to_ulong();
-  write(fd, &val, 1);
-}
 
-int read_head(int fd, int *entry_size, int *last_length) {
-  int head_size = sizeof(huff_head);
-  huff_head head;
-  int ret = read(fd, &head, head_size);
-  if (head.magic != MAGIC) return -1;
-  *entry_size = head.size;
-  *last_length = head.last_length;
-  return 0;
-}
-void convert_uint16_to_01_str(uint16_t code, int length, string &ret) {
-  for (int i = 0; i < length; i++) {
-    int val = (code & (1 << i)) >> i;
-    ret.insert(ret.begin(), val == 0 ? '0' : '1');
-  }
-}
+public:
+  huffman_encoder(char *input, char *output) : huffman_coder_base(input, output) {}
 
-int read_entry(int fd, int entry_size, vector<huff_code> &v) {
-  for (int i = 0; i < entry_size; i++) {
-    int entry_size = sizeof(huff_entry);
-    huff_entry entry;
-    int ret = read(fd, &entry, entry_size);
-    if (ret == -1) return -1;
-    huff_code code(entry.val);
-    string str;
-    convert_uint16_to_01_str(entry.code, entry.length, str);
-    code.code = str;
-    v.push_back(code);
+  int read() override {
+    if (read_init() == -1) return -1;
+    src.resize(file_size);
+    in.read(src.data(), file_size);
+    return 0;
   }
-  return 0;
-}
-void read_contents(int fd, string &contents, int file_size, int entry_size, int file_length) {
-  int contents_size = file_size - sizeof(huff_head) - sizeof(huff_entry) * entry_size;
-  char *buffer = new char[contents_size];
-  int ret_sz = read(fd, buffer, contents_size);
-  for (int i = 0; i < contents_size - 1; i++) {
-    uint8_t ch = buffer[i];
-    string tmp = "";
-    for (int j = 7; j >= 0; j--) {
-      int val = (ch & (1 << j)) >> j;
+
+  int write() override {
+    if (write_init() == -1) return -1;
+
+    build_tree(src, t);
+    t.extract_maps(maps);
+    for (auto val: maps) v.push_back(val.second);
+    for (auto ch: src) dst.append(maps[ch].code);
+    last_length = dst.size() % 8;
+
+    write_head();
+    write_entry();
+    write_contents();
+    return 0;
+  }
+};
+
+class huffman_decoder : protected huffman_coder_base {
+private:
+  size_t entry_size;
+  size_t last_length;
+
+private:
+  int read_head() {
+    int head_size = sizeof(huff_head);
+    huff_head head;
+    char *buffer = new char[head_size];
+    in.read(buffer, head_size);
+    memcpy(&head, buffer, head_size);
+    if (head.magic != MAGIC) return -1;
+    entry_size = head.size;
+    last_length = head.last_length;
+    return 0;
+  }
+
+  void convert_uint16_to_01_str(uint16_t code, int length, std::string &ret) {
+    for (int i = 0; i < length; i++) {
+      int val = (code & (1 << i)) >> i;
+      ret.insert(ret.begin(), val == 0 ? '0' : '1');
+    }
+  }
+
+  int read_entry() {
+    for (int i = 0; i < entry_size; i++) {
+      int entry_size = sizeof(huff_entry);
+      huff_entry entry;
+      char *buffer = new char[entry_size];
+      in.read(buffer, entry_size);
+      memcpy(&entry, buffer, entry_size);
+      huff_code code(entry.val);
+      std::string str;
+      convert_uint16_to_01_str(entry.code, entry.length, str);
+      code.code = str;
+      v.push_back(code);
+    }
+    return 0;
+  }
+
+  void read_contents() {
+    int contents_size = file_size - sizeof(huff_head) - sizeof(huff_entry) * entry_size;
+    char *buffer = new char[contents_size];
+    in.read(buffer, contents_size);
+    for (int i = 0; i < contents_size - 1; i++) {
+      uint8_t ch = buffer[i];
+      std::string tmp = "";
+      for (int j = 7; j >= 0; j--) {
+        int val = (ch & (1 << j)) >> j;
+        tmp.insert(tmp.end(), val == 0 ? '0' : '1');
+      }
+      src.append(tmp);
+    }
+    // special for the last
+    uint8_t ch = buffer[contents_size - 1];
+    std::string tmp = "";
+    for (int i = 7; i >= 7 - last_length; i--) {
+      int val = (ch & (1 << i)) >> i;
       tmp.insert(tmp.end(), val == 0 ? '0' : '1');
     }
-    contents.append(tmp);
+    src.append(tmp);
   }
-  // special for the last
-  uint8_t ch = buffer[contents_size - 1];
-  string tmp = "";
-  for (int i = 7; i >= 7 - file_length; i--) {
-    int val = (ch & (1 << i)) >> i;
-    tmp.insert(tmp.end(), val == 0 ? '0' : '1');
-  }
-  contents.append(tmp);
-}
-void decode(string &src, string &dst, huff_tree &t) {
-  huff_node *p = t.root;
-  for (uint8_t ch: src) {
-    p = (ch == '0') ? p->left : p->right;
-    if (p->type == LEAF) {
-      dst.push_back(p->data.val);
-      p = t.root;
+
+  void decode() {
+    huff_node *p = t.root;
+    for (uint8_t ch: src) {
+      p = (ch == '0') ? p->left : p->right;
+      if (p->type == LEAF) {
+        dst.push_back(p->data.val);
+        p = t.root;
+      }
     }
   }
-}
 
-/**
- * encode: read and write into huff file
- */
+public:
+  huffman_decoder(char *input, char *output) : huffman_coder_base(input, output) {}
 
-int read_text(const char *filename, string &contents) {
-  int fd = open(filename, O_RDONLY);
-  if (fd == -1) return -1;
-  struct stat st;
-  stat(filename, &st);
-  int size = st.st_size;
-  char *buffer = new char[size];
-  read(fd, buffer, size);
-  contents = string(buffer);
-  close(fd);
-  return 0;
-}
+  int read() override {
+    if (read_init() == -1) return -1;
+    read_head();
+    read_entry();
+    rebuild_tree(v, t);
+    read_contents();
+    return 0;
+  }
 
-int write_code(const char *filename, string &contents, huff_tree &t) {
-  int fd = open(filename, O_CREAT | O_RDWR, 0644);
-  if (fd == -1) return -1;
-  map<uint8_t, huff_code> maps;
-  t.extract_maps(maps);
-  vector<huff_code> v;
-  for (auto val: maps) v.push_back(val.second);
-  string dst;
-  for (auto ch: contents) dst.append(maps[ch].code);
-  // byte, not bit size
-  int last_length = dst.size() % 8;
-  ssize_t ret = write_head(fd, t, last_length);
-  write_entry(fd, t, v);
-  int file_size = sizeof(huff_head) + sizeof(huff_entry) * t.size;
-  write_contents(fd, dst, t);
-  close(fd);
-  return 0;
-}
-
-/**
- * decode: read from huff file and write into file
- */
-
-int read_code(const char *filename, string &src, huff_tree &t) {
-  int fd = open(filename, O_RDONLY);
-  if (fd == -1) return -1;
-  struct stat st;
-  stat(filename, &st);
-  int file_size = st.st_size;
-  int entry_size;
-  int last_length;
-  int ret = read_head(fd, &entry_size, &last_length);
-  if (ret == -1) return -1;
-  cout << "entry_size:" << entry_size << ",last_length:" << last_length << "\n";
-  vector<huff_code> v;
-  read_entry(fd, entry_size, v);
-  rebuild_tree(v, t);
-  read_contents(fd, src, file_size, entry_size, last_length);
-  return 0;
-}
-
-int write_text(const char *filename, string &src, huff_tree &t) {
-  int fd = open(filename, O_CREAT | O_RDWR, 0644);
-  if (fd == -1) return -1;
-  string dst = "";
-  decode(src, dst, t);
-  int dst_size = dst.size();
-  int ret = write(fd, dst.c_str(), dst_size);
-  return 0;
-}
+  int write() override {
+    if (write_init() == -1) return -1;
+    decode();
+    out.write(dst.c_str(), dst.size());
+    return 0;
+  }
+};
 
 /**
  * huffman <encode/decode> <input> <output>
@@ -374,17 +420,14 @@ int main(int argc, char *argv[]) {
   char *mode = argv[1];
   char *input_file = argv[2];
   char *output_file = argv[3];
-  huff_tree t;
-  string src = "";
   if (strcmp(mode, "encode") == 0) {
-    int rd = read_text(input_file, src);
-    if (rd == -1) return -1;
-    build_tree(src, t);
-    write_code(output_file, src, t);
+    huffman_encoder encoder(input_file, output_file);
+    encoder.read();
+    encoder.write();
   } else if (strcmp(mode, "decode") == 0) {
-    int rd = read_code(input_file, src, t);
-    if (rd == -1) return -1;
-    write_text(output_file, src, t);
+    huffman_decoder decoder(input_file, output_file);
+    decoder.read();
+    decoder.write();
   } else {
     return -1;
   }

@@ -12,9 +12,6 @@ config:
 build: config main.cpp
 	$(CC) $(CFLAGS) main.cpp -o $(BUILD_DIR)/$(TARGET)
 
-run:
-	$(BUILD_DIR)/$(TARGET) a.txt
-
 test-encode:
 	$(BUILD_DIR)/$(TARGET) encode a.txt a.huff
 
