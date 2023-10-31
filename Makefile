@@ -9,14 +9,14 @@ TARGET = huffman
 config:
 	mkdir -p $(BUILD_DIR)
 
-build: config main.cpp
+build: config main.cpp huffman.hpp
 	$(CC) $(CFLAGS) main.cpp -o $(BUILD_DIR)/$(TARGET)
 
 test-encode:
-	$(BUILD_DIR)/$(TARGET) encode example/a.txt example/a.huff
+	$(BUILD_DIR)/$(TARGET) -m encode -i example/a.txt -o example/a.huff
 
 test-decode:
-	$(BUILD_DIR)/$(TARGET) decode example/a.huff example/b.txt
+	$(BUILD_DIR)/$(TARGET) -m decode -i example/a.huff -o example/b.txt
 
 test: test-encode test-decode
 
@@ -24,7 +24,7 @@ format:
 	clang-format -i *.cpp *.hpp
 
 clean:
-	rm -rf $(BUILD_DIR)/*
+	rm -rf $(BUILD_DIR)/* example/*.huff example/b.txt
 
 commit ?= test
 

@@ -97,7 +97,10 @@ private:
   void _build(const std::string &src) {
     _maps_generator(src);
     // push all into priority queue
-    std::priority_queue<huff_node *, std::vector<huff_node *>, huff_node::Compare> q;
+    using pq = std::priority_queue<huff_node *,
+                                   std::vector<huff_node *>,
+                                   huff_node::Compare>;
+    pq q;
     for (auto &pair: _map) q.push(pair.second);
     uint32_t node_size = q.size();// get node size
     while (q.size() >= 2) {
@@ -238,18 +241,31 @@ void huff_entry_init(huff_entry &e, uint8_t val,
   e.code = code;
 }
 
+#define error(fmt, ...) fprintf(stderr, "\033[31m"                   \
+                                        "huffman: " fmt "\033[0m\n", \
+                                ##__VA_ARGS__)
+#define warn(fmt, ...) fprintf(stderr, "\033[35m"                   \
+                                       "huffman: " fmt "\033[0m\n", \
+                               ##__VA_ARGS__)
+#define debug(fmt, ...) fprintf(stderr, "\033[34m"                   \
+                                        "huffman: " fmt "\033[0m\n", \
+                                ##__VA_ARGS__)
+#define info(fmt, ...) fprintf(stderr, "\033[32m"                   \
+                                       "huffman: " fmt "\033[0m\n", \
+                               ##__VA_ARGS__)
+
 class huffman_coder_base {
 protected:
   huff_tree t;
   std::string src, dst;
-  char *input_file, *output_file;
+  std::string input_file, output_file;
   size_t file_size, last_length;
   std::ifstream in;
   std::ofstream out;
 
 public:
-  huffman_coder_base(char *input, char *output)
-      : input_file(input), output_file(output) {
+  huffman_coder_base(std::string &&input, std::string &&output)
+      : input_file(std::move(input)), output_file(std::move(output)) {
     src = dst = "";
   }
 
@@ -258,42 +274,48 @@ public:
     out.close();
   }
 
-  virtual int read_init() {
-    if (!fs::exists(input_file)) return -1;
+  virtual void read_init() {
+    if (!fs::exists(input_file)) {
+      error("%s file not exists.", input_file.c_str());
+      exit(EXIT_FAILURE);
+    }
     fs::path p = input_file;
     file_size = fs::file_size(p);
     in = std::ifstream(p, std::ios::in | std::ios::binary);
-    if (!in) return -1;
-    return 0;
+    if (!in) {
+      error("can not access to file %s.", input_file.c_str());
+      exit(EXIT_FAILURE);
+    }
   }
 
-  virtual int write_init() {
+  virtual void write_init() {
     if (!fs::exists(output_file)) {
       fs::create_directories(fs::current_path());
       out = std::ofstream(output_file);
     }
     out = std::ofstream(output_file, std::ios::trunc);
-    if (!out.is_open()) return -1;
-    return 0;
+    if (!out.is_open()) {
+      error("can not access to file %s.", output_file.c_str());
+      exit(EXIT_FAILURE);
+    }
   }
 
-  virtual int read() = 0;
-  virtual int write() = 0;
+  virtual void read() = 0;
+  virtual void write() = 0;
 };
 
 class huffman_encoder : protected huffman_coder_base {
 private:
-  int write_head() {
+  void write_head() {
     int head_size = sizeof(huff_head);
     huff_head head;
     huff_head_init(head, t.size(), last_length);
     char *buffer = new char[head_size];
     memcpy(buffer, &head, head_size);
     out.write(buffer, head_size);
-    return 0;
   }
 
-  int write_entry() {
+  void write_entry() {
     for (auto code: t.get_list()) {
       int entry_size = sizeof(huff_entry);
       std::bitset<16> b(code.code.c_str());
@@ -304,7 +326,6 @@ private:
       memcpy(buffer, &entry, entry_size);
       out.write(buffer, entry_size);
     }
-    return 0;
   }
 
   void write_contents() {
@@ -330,28 +351,27 @@ private:
   }
 
 public:
-  huffman_encoder(char *input, char *output) : huffman_coder_base(input, output) {}
+  huffman_encoder(std::string &&input, std::string &&output)
+      : huffman_coder_base(std::move(input), std::move(output)) {}
 
-  int read() override {
-    if (read_init() == -1) return -1;
+  void read() override {
+    read_init();
     src.resize(file_size);
     in.read(src.data(), file_size);
-    return 0;
   }
 
-  int write() override {
-    if (write_init() == -1) return -1;
+  void write() override {
+    write_init();
     t.encode(src, dst);
     last_length = dst.size() % 8;
     write_head();
     write_entry();
     write_contents();
-    return 0;
   }
 
-  int encode() {
-    if (read() == -1) return -1;
-    return write();
+  void encode() {
+    read();
+    write();
   }
 };
 
@@ -398,10 +418,10 @@ private:
   }
 
   void read_contents() {
-    int content_bytes = file_size - sizeof(huff_head) - sizeof(huff_entry) * entry_size;
-    char *buffer = new char[content_bytes];
-    in.read(buffer, content_bytes);
-    for (int i = 0; i < content_bytes - 1; i++) {
+    int cont_bytes = file_size - sizeof(huff_head) - sizeof(huff_entry) * entry_size;
+    char *buffer = new char[cont_bytes];
+    in.read(buffer, cont_bytes);
+    for (int i = 0; i < cont_bytes - 1; i++) {
       uint8_t ch = buffer[i];
       std::string tmp = "";
       for (int j = 7; j >= 0; j--) {
@@ -414,34 +434,33 @@ private:
     std::string tmp = "";
     int end = (last_length == 0) ? -1 : (7 - last_length);
     for (int i = 7; i > end; i--) {
-      int val = (buffer[content_bytes - 1] & (1 << i)) >> i;
+      int val = (buffer[cont_bytes - 1] & (1 << i)) >> i;
       tmp.push_back(val == 0 ? '0' : '1');
     }
     src.append(tmp);
   }
 
 public:
-  huffman_decoder(char *input, char *output) : huffman_coder_base(input, output) {}
+  huffman_decoder(std::string &&input, std::string &&output)
+      : huffman_coder_base(std::move(input), std::move(output)) {}
 
-  int read() override {
-    if (read_init() == -1) return -1;
+  void read() override {
+    read_init();
     read_head();
     read_entry();
     t.build();
     read_contents();
-    return 0;
   }
 
-  int write() override {
-    if (write_init() == -1) return -1;
+  void write() override {
+    write_init();
     t.decode(src, dst);
     out.write(dst.c_str(), dst.size());
-    return 0;
   }
 
-  int decode() {
-    if (read() == -1) return -1;
-    return write();
+  void decode() {
+    read();
+    write();
   }
 };
 
