@@ -1,5 +1,4 @@
 .vscode
 build
 main
-*.txt
 *.huff
