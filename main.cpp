@@ -374,9 +374,16 @@ private:
     // special for the last
     uint8_t ch = buffer[contents_size - 1];
     std::string tmp = "";
-    for (int i = 7; i >= 7 - last_length; i--) {
-      int val = (ch & (1 << i)) >> i;
-      tmp.insert(tmp.end(), val == 0 ? '0' : '1');
+    if (last_length == 0) {
+      for (int i = 7; i >= 0; i--) {
+        int val = (ch & (1 << i)) >> i;
+        tmp.insert(tmp.end(), val == 0 ? '0' : '1');
+      }
+    } else {
+      for (int i = 7; i > 7 - last_length; i--) {
+        int val = (ch & (1 << i)) >> i;
+        tmp.insert(tmp.end(), val == 0 ? '0' : '1');
+      }
     }
     src.append(tmp);
   }
