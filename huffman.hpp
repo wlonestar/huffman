@@ -13,8 +13,19 @@
 
 namespace huffman {
 
-// huff file magic number: .HUF
-#define HUFF_MAGIC 0x4655482e
+// print infomation with color
+#define LOG_ERROR "\033[31m"
+#define LOG_WARN "\033[35m"
+#define LOG_DEBUG "\033[34m"
+#define LOG_INFO "\033[32m"
+#define log_base(level, fmt, ...) \
+  fprintf(stderr, level "huffman: " fmt "\033[0m\n", ##__VA_ARGS__)
+#define error(fmt, ...) log_base(LOG_ERROR, fmt, ##__VA_ARGS__)
+#define warn(fmt, ...) log_base(LOG_WARN, fmt, ##__VA_ARGS__)
+#define debug(fmt, ...) log_base(LOG_DEBUG, fmt, ##__VA_ARGS__)
+#define info(fmt, ...) log_base(LOG_INFO, fmt, ##__VA_ARGS__)
+
+#define HUFF_MAGIC 0x4655482e// huff file magic number: .HUF
 
 namespace fs = std::filesystem;
 
@@ -109,8 +120,8 @@ private:
       huff_node *right = q.top();
       q.pop();
       huff_code code(' ', left->data.freq + right->data.freq);
-      huff_node *parent = new huff_node(std::move(code), left, right, INTERNAL);
-      q.push(parent);
+      huff_node *p = new huff_node(std::move(code), left, right, INTERNAL);
+      q.push(p);
     }
     assert(q.size() == 1);
     _root = q.top();
@@ -124,7 +135,6 @@ public:
   uint32_t size() const { return _size; }
 
   std::vector<huff_code> &get_list() { return _list; }
-
   void set_list(std::vector<huff_code> &&list) { _list = std::move(list); }
 
   /**
@@ -160,23 +170,17 @@ public:
       for (int i = 0; i < item.code.size(); i++) {
         char ch = item.code[i];
         huff_code code(item.val);
+        huff_type type = (i == item.code.size() - 1) ? LEAF : INTERNAL;
+        huff_node *child = new huff_node(huff_code(), nullptr, nullptr, type);
         if (ch == '0') {
-          if (p->left == nullptr) {
-            huff_node *left = new huff_node();
-            left->type = (i == item.code.size() - 1) ? LEAF : INTERNAL;
-            p->left = left;
-          }
+          if (p->left == nullptr) p->left = child;
           code.code = p->data.code + "0";
-          p->left->data = code;
+          p->left->data = std::move(code);
           p = p->left;
         } else if (ch == '1') {
-          if (p->right == nullptr) {
-            huff_node *right = new huff_node();
-            right->type = (i == item.code.size() - 1) ? LEAF : INTERNAL;
-            p->right = right;
-          }
+          if (p->right == nullptr) p->right = child;
           code.code = p->data.code + "1";
-          p->right->data = code;
+          p->right->data = std::move(code);
           p = p->right;
         }
       }
@@ -191,11 +195,9 @@ public:
     if (p == nullptr) return;
     printf("%s--", prefix_str.c_str());
     if (p->type == LEAF) {
-      if (p->data.code == "") {
-        printf("[%d]\n", p->data.val);
-      } else {
-        printf("[%d](%s)\n", p->data.val, p->data.code.c_str());
-      }
+      printf("[%d]", p->data.val);
+      if (p->data.code != "") printf("(%s)", p->data.code.c_str());
+      printf("\n");
     } else {
       printf("%u:\n", p->data.freq);
     }
@@ -240,19 +242,6 @@ void huff_entry_init(huff_entry &e, uint8_t val,
   e.length = length;
   e.code = code;
 }
-
-#define error(fmt, ...) fprintf(stderr, "\033[31m"                   \
-                                        "huffman: " fmt "\033[0m\n", \
-                                ##__VA_ARGS__)
-#define warn(fmt, ...) fprintf(stderr, "\033[35m"                   \
-                                       "huffman: " fmt "\033[0m\n", \
-                               ##__VA_ARGS__)
-#define debug(fmt, ...) fprintf(stderr, "\033[34m"                   \
-                                        "huffman: " fmt "\033[0m\n", \
-                                ##__VA_ARGS__)
-#define info(fmt, ...) fprintf(stderr, "\033[32m"                   \
-                                       "huffman: " fmt "\033[0m\n", \
-                               ##__VA_ARGS__)
 
 class huffman_coder_base {
 protected:
@@ -321,7 +310,7 @@ private:
       std::bitset<16> b(code.code.c_str());
       uint16_t t = b.to_ulong();
       huff_entry entry;
-      huff_entry_init(entry, code.val, static_cast<uint8_t>(code.code.size()), t);
+      huff_entry_init(entry, code.val, (uint8_t) code.code.size(), t);
       char *buffer = new char[entry_size];
       memcpy(buffer, &entry, entry_size);
       out.write(buffer, entry_size);
@@ -392,10 +381,10 @@ private:
     return 0;
   }
 
-  void convert_uint16_to_01_str(uint16_t code, int length, std::string &ret) {
-    for (int i = length - 1; i >= 0; i--) {
-      int val = (code & (1 << i)) >> i;
-      ret.push_back(val == 0 ? '0' : '1');
+  void convert_uint16_to_01_str(uint16_t val, int len, std::string &dst) {
+    for (int i = len - 1; i >= 0; i--) {
+      int bit = (val & (1 << i)) >> i;
+      dst.push_back(bit == 0 ? '0' : '1');
     }
   }
 
@@ -418,7 +407,8 @@ private:
   }
 
   void read_contents() {
-    int cont_bytes = file_size - sizeof(huff_head) - sizeof(huff_entry) * entry_size;
+    int cont_bytes =
+      file_size - sizeof(huff_head) - sizeof(huff_entry) * entry_size;
     char *buffer = new char[cont_bytes];
     in.read(buffer, cont_bytes);
     for (int i = 0; i < cont_bytes - 1; i++) {

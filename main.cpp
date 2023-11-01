@@ -52,16 +52,26 @@ void parse_args(int argc, char *argv[], std::string &mode,
     }
   }
 
-  if (mode.compare("") == 0) error("option requires an argument -- 'm'.");
+  if (mode.compare("") == 0) {
+    error("option requires an argument -- 'm'.");
+    exit(EXIT_FAILURE);
+  }
   if (mode.compare("encode") != 0 && mode.compare("decode") != 0) {
     error("mode is only 'encode' or 'decode'.");
+    exit(EXIT_FAILURE);
   }
-  if (input_file.compare("") == 0) error("option requires an argument -- 'i'.");
-  if (output_file.compare("") == 0) error("option requires an argument -- 'o'.");
+  if (input_file.compare("") == 0) {
+    error("option requires an argument -- 'i'.");
+    exit(EXIT_FAILURE);
+  }
+  if (output_file.compare("") == 0) {
+    error("option requires an argument -- 'o'.");
+    exit(EXIT_FAILURE);
+  }
 }
 
 /**
- * huffman <encode/decode> <input> <output>
+ * huffman -m [encode|decode] -i [input_file] -o [output_file]
  */
 int main(int argc, char *argv[]) {
   std::string mode = "";
