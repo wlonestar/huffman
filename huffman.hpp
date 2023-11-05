@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <queue>
 #include <vector>
 
@@ -95,7 +96,7 @@ private:
       if (_map.find(ch) == _map.end()) {
         huff_code code(ch);
         huff_node *node = new huff_node(std::move(code));
-        _map.insert({ch, node});
+        _map.insert({ch, std::move(node)});
       } else {
         _map[ch]->data.freq++;
       }
@@ -302,6 +303,7 @@ private:
     char *buffer = new char[head_size];
     memcpy(buffer, &head, head_size);
     out.write(buffer, head_size);
+    delete [] buffer;
   }
 
   void write_entry() {
@@ -314,6 +316,7 @@ private:
       char *buffer = new char[entry_size];
       memcpy(buffer, &entry, entry_size);
       out.write(buffer, entry_size);
+      delete [] buffer;
     }
   }
 
@@ -322,9 +325,8 @@ private:
     for (i = 0; i < times * 8; i += 8) {
       std::bitset<8> b(dst.substr(i, 8));
       uint8_t val = b.to_ulong();
-      char *buffer = new char[1];
-      memcpy(buffer, &val, 1);
-      out.write(buffer, 1);
+      char buffer = static_cast<char>(val);
+      out.write(&buffer, 1);
     }
     /**
      * deal with last byte less 8 bit: append 0 bit
@@ -334,9 +336,8 @@ private:
     for (int k = 0; k < 8 - (dst.size() - i); k++) last.push_back('0');
     std::bitset<8> b(last);
     uint8_t val = b.to_ulong();
-    char *buffer = new char[1];
-    memcpy(buffer, &val, 1);
-    out.write(buffer, 1);
+    char buffer = static_cast<char>(val);
+    out.write(&buffer, 1);
   }
 
 public:

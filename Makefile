@@ -1,5 +1,5 @@
 CC := clang++
-CFLAGS := -O2 -g --std=c++20
+CFLAGS := -O2 -g --std=c++20 -fsanitize=address
 
 BUILD_DIR = build
 TARGET = huffman
